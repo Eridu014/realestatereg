@@ -3,6 +3,7 @@ import tarfile
 import urllib.request
 import numpy as np
 import pandas as pd
+from pandas.plotting import scatter_matrix
 import matplotlib.pyplot as plt
 from zlib import crc32
 from sklearn.model_selection import StratifiedShuffleSplit, train_test_split
@@ -74,7 +75,7 @@ housing["income_cat"] = pd.cut(housing["median_income"],
                               bins = [0., 1.5, 3.0, 4.5, 6., np.inf], #income levels (e.g. 1.5 = 15k)
                               labels = [1, 2, 3, 4, 5]) #labels for incomes
 #show income categories histogram
-df["income_cat"].hist()
+#df["income_cat"].hist()
 
 #take stratified sample of income
 split = StratifiedShuffleSplit(n_splits = 1, test_size = 0.2, random_state = 42)
@@ -83,7 +84,7 @@ for train_index, test_index in split.split(df, df["income_cat"]):
     strat_test_set = df.loc[test_index]
     
 #income category proportions
-print(strat_test_set["income_cat"].value_counts() / len(strat_test_set))
+#print(strat_test_set["income_cat"].value_counts() / len(strat_test_set))
 
 #remove the income_Cat attribute so data can revert back to original state
 for set_ in (strat_train_set, strat_test_set):
@@ -97,17 +98,98 @@ for set_ in (strat_train_set, strat_test_set):
 housing = strat_train_set.copy()
 
 #scattter plot for geo location
-housing.plot(kind = "scatter", x = "longitude", y = "latitude")
+#housing.plot(kind = "scatter", x = "longitude", y = "latitude")
 #set alpha parameter to 0.1 to view density of data points
-housing.plot(kind = "scatter", x = "longitude", y = "latitude", alpha = 0.1)
+#housing.plot(kind = "scatter", x = "longitude", y = "latitude", alpha = 0.1)
 
 #housing prices and pop scatterplot
-housing.plot(kind = "scatter", x = "longitude", y = "latitude", alpha = 0.5, s = housing["population"]/100, label = "population", figsize = (11, 7), c = "median_house_value", cmap = plt.get_cmap("jet"), colorbar = True)
-plt.legend()
+#housing.plot(kind = "scatter", x = "longitude", y = "latitude", alpha = 0.5, s = housing["population"]/100, label = "population", figsize = (11, 7), c = "median_house_value", cmap = plt.get_cmap("jet"), colorbar = True)
+#plt.legend()
 
 #compute the standard correlation coefficient
+
+#print(corr_matrix["median_house_value"].sort_values(ascending = True))
 corr_matrix = housing.corr()
-corr_matrix["median_house_value"].sort_values(ascending = True)
 #create histogram
-df.hist(bins = 50, figsize = (20, 15))
+#df.hist(bins = 50, figsize = (20, 15))
+#plt.show()
+
+#using Pandas, create scatter matrix of all numeric attributes correlated with every other numeric attribute
+attributes = ["median_house_value", "total_rooms", "median_income", "housing_median_age"]
+scatter_matrix(housing[attributes], figsize = (12, 8))
 plt.show()
+
+#correlation between median income and median home price
+housing.plot(kind = "scatter", x = "median_income", y = "median_house_value", alpha = 0.1)
+plt.show()
+
+#creating new attributes
+housing["rooms_per_household"] = housing["total_rooms"]/housing["households"]
+housing["bedrooms_per_room"] = housing["total_bedrooms"]/housing["total_rooms"]
+housing["population_per_household"] = housing["population"]/housing["households"]
+corr_matrix = housing.corr()
+print(corr_matrix["rooms_per_household"].sort_values(ascending = False))
+
+
+
+###################################################
+#PREPARING DATA FOR ML ALGORITHMS
+###################################################
+
+housing2 = strat_train_set.drop("median_house_value", axis = 1)
+housing_labels = strat_train_set["median_house_value"].copy()
+
+######################################################
+#DATA CLEANING
+######################################################
+
+#get rid of missing features in the dataset
+#housing2.dropna(subset = ["total_bedrooms"]) #option 1
+#housing2.drop("total_bedrooms", axis = 1) #option 2
+#median = housing2["total_bedrooms"].median() #option 3
+#housing2["total_bedrooms"].fillna(median, inplace = True)
+
+#or Scikit
+from sklearn.impute import SimpleImputer
+imputer = SimpleImputer(strategy = "median")
+
+housing2_num = housing2.drop("ocean_proximity", axis = 1) #drop non-numerical attribute 
+imputer.fit(housing2_num)
+print(imputer.statistics_) #median of each attribute stored in statistics_ variable
+
+#replace missing values by learned medians
+X = imputer.transform(housing2_num)
+
+#reconvert back into pandas DF (rn its just a numpy array)
+housing_tr = pd.DataFrame(X, columns = housing2_num.columns, index = housing2_num.index)
+
+#remake ocean_proximity attribute (categorical) into a numerical attribute
+housing_cat = housing2[["ocean_proximity"]]
+from sklearn.preprocessing import OrdinalEncoder
+ordinal_encoder = OrdinalEncoder()
+housing_cat_encoded = ordinal_encoder.fit_transform(housing_cat)
+print(housing_cat_encoded[:10])
+#one-hot encoding (assigning binary attribute per category e.g. NEAR OCEAN = 1)
+from sklearn.preprocessing import OneHotEncoder
+cat_encoder = OneHotEncoder()
+housing_cat_1hot = cat_encoder.fit_transform(housing_cat)
+#the variable is a sparse matrix instead of a numpy array
+
+#CUSTOM TRANSFORMER
+from sklearn.base import BaseEstimator, TransformerMixin
+
+rooms_ix, bedrooms_ix, population_ix, households_ix = 3, 4, 5, 6
+
+class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
+    def __init__(self, add_bedrooms_per_room = True):
+        self.add_bedrooms_per_room = add_bedrooms_per_room #add_bedrooms_per_room is hyperparameter of transformer
+    def fit(self, X, y = None):
+        return self
+    def transform(self, X):
+        rooms_per_household = X[:, rooms_ix] / X[:, households_ix]
+        population_per_household = X[:, population_ix] / X[:, households_ix]
+        if self.add_bedrooms_per_room:
+            bedrooms_per_room = X[:, bedrooms_ix] / X[:, rooms_ix]
+            return np.c_[X, rooms_per_household, population_per_household, bedrooms_per_room]
+        else:
+            return np.c_[X, rooms_per_household, population_per_household]
